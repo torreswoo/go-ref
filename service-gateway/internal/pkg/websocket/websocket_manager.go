@@ -21,17 +21,15 @@ type webSocketManagerImpl struct {
 	unregisterChan   chan *WebSocketClient
 	disconnectedChan chan *WebSocketClient
 	finishedChan     chan bool
-	cancelFunc       context.CancelFunc
 }
 
-func NewWebSocketManager(cancelFunc context.CancelFunc) *webSocketManagerImpl {
+func NewWebSocketManager() *webSocketManagerImpl {
 	m := &webSocketManagerImpl{
 		clients:          make(map[*WebSocketClient]bool),
 		registerChan:     make(chan *ws.Conn),
 		unregisterChan:   make(chan *WebSocketClient),
 		disconnectedChan: make(chan *WebSocketClient),
 		finishedChan:     make(chan bool),
-		cancelFunc:       cancelFunc,
 	}
 
 	return m
@@ -92,7 +90,7 @@ func (m *webSocketManagerImpl) unregister(c *WebSocketClient) error {
 	return nil
 }
 
-func (m *webSocketManagerImpl) Run(ctx context.Context) {
+func (m *webSocketManagerImpl) run(appCtx context.Context) {
 	log, _ := zap.NewProduction()
 	defer log.Sync()
 	logger := log.Sugar()
@@ -107,7 +105,7 @@ func (m *webSocketManagerImpl) Run(ctx context.Context) {
 		case client := <-m.unregisterChan:
 			m.unregister(client)
 
-		case <-ctx.Done():
+		case <-appCtx.Done():
 			for c, _ := range m.clients {
 				m.unregister(c)
 			}
@@ -115,14 +113,14 @@ func (m *webSocketManagerImpl) Run(ctx context.Context) {
 			close(m.registerChan)
 			close(m.unregisterChan)
 			logger.Info("Stopped WebSocketManager")
+
 			m.finishedChan <- true
+			close(m.finishedChan)
 			return
 		}
 	}
 }
 
-func (m *webSocketManagerImpl) Stop() {
-	m.cancelFunc()
-	<-m.finishedChan
-	close(m.finishedChan)
+func (m *webSocketManagerImpl) Stop() <-chan bool {
+	return m.finishedChan
 }

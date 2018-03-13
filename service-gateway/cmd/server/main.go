@@ -17,12 +17,13 @@ import (
 	"github.com/1ambda/go-ref/service-gateway/internal/pkg/config"
 	"github.com/1ambda/go-ref/service-gateway/internal/pkg/model"
 	"github.com/1ambda/go-ref/service-gateway/internal/pkg/rest"
-	"github.com/1ambda/go-ref/service-gateway/internal/pkg/service"
 	"github.com/1ambda/go-ref/service-gateway/internal/pkg/websocket"
 
 	"github.com/1ambda/go-ref/service-gateway/pkg/generated/swagger/rest_server"
 	"github.com/1ambda/go-ref/service-gateway/pkg/generated/swagger/rest_server/rest_api"
 	"go.uber.org/zap"
+	"github.com/1ambda/go-ref/service-gateway/internal/pkg/realtime"
+	"context"
 )
 
 func main() {
@@ -43,6 +44,8 @@ func main() {
 		"websocket_port", spec.WebSocketPort,
 		"http_port", spec.HttpPort,
 		"debug", spec.Debug,
+		"etcd_endpoints", spec.EtcdEndpoints,
+		"server_name", "gateway-0",
 	)
 
 	// setup db connection
@@ -57,12 +60,18 @@ func main() {
 	db.SingularTable(true)
 	db.Set("gorm:table_options", "ENGINE=InnoDB").AutoMigrate(&model.Access{})
 
-	// create services
-	realtimeService := service.NewRealtimeStatService(db)
+	//
+	appCtx, appCancelFunc := context.WithCancel(context.Background())
+
+	// setup etcd
+	logger.Info("Configure distributed client (etcd)")
+	dClient := realtime.NewDistributedClient(appCtx, spec.EtcdEndpoints)
+
 	// configure WS server handlers, middlewares
 	logger.Info("Configure WS server")
 	mux := http.NewServeMux()
-	wsManager := websocket.Configure(mux)
+
+	wsManager := websocket.Configure(appCtx, mux)
 	//wsCors := cors.New(cors.Options{
 	//	AllowedOrigins: []string{"http://localhost:3000"},
 	//	AllowCredentials: true,
@@ -112,7 +121,7 @@ func main() {
 
 	// configure REST server handlers, middlewares
 	logger.Info("Configure REST handlers")
-	rest.Configure(db, api, realtimeService)
+	rest.Configure(db, api)
 	handler := api.Serve(nil)
 
 	logger.Info("Configure REST middleware")
@@ -121,7 +130,9 @@ func main() {
 
 	api.ServerShutdown = func() {
 		logger.Info("Handling shutdown hook")
-		wsManager.Stop()
+		appCancelFunc()
+		dClient.Stop()
+		<-wsManager.Stop()
 	}
 
 	if err := server.Serve(); err != nil {
